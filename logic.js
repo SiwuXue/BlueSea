@@ -1,3 +1,5 @@
+// Make logic usable in both page (window) and service worker (self) contexts
+const __globalRef = typeof window !== 'undefined' ? window : (typeof self !== 'undefined' ? self : {});
 const {
   html,
   Component,
@@ -7,11 +9,12 @@ const {
   useCallback,
   useRef,
   useMemo,
-} = window.$htm || {};
+} = (__globalRef.$htm || {});
 
 class Storage {
   constructor(key) {
     this.key = key;
+    this.cache = undefined;
   }
   async _getRootStorage() {
     if (chrome.storage) {
@@ -29,19 +32,43 @@ class Storage {
     }
   }
   async get() {
-    return new Promise(async (resolve) => {
-      const storage = await this._getRootStorage();
-      storage.local.get(this.key, (obj) => {
-        resolve(obj[this.key]);
-      });
+    return new Promise(async (resolve, reject) => {
+      try {
+        const storage = await this._getRootStorage();
+        storage.local.get(this.key, (obj) => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+            return;
+          }
+          const val = obj[this.key];
+          if (typeof val !== 'undefined') {
+            this.cache = val;
+          }
+          resolve(typeof val !== 'undefined' ? val : this.cache);
+        });
+      } catch (err) {
+        // 当扩展上下文失效或存储不可用时，回退到缓存，避免抛出到调用方
+        resolve(this.cache);
+      }
     });
   }
   async set(value) {
-    return new Promise(async (resolve) => {
-      const storage = await this._getRootStorage();
-      storage.local.set({ [this.key]: value }, () => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const storage = await this._getRootStorage();
+        storage.local.set({ [this.key]: value }, () => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+            return;
+          }
+          this.cache = value;
+          resolve();
+        });
+      } catch (err) {
+        // 写入失败不抛出致命错误，保持页面继续运行
+        this.cache = value;
         resolve();
-      });
+      }
     });
   }
   async watch(cb) {
@@ -49,7 +76,9 @@ class Storage {
 
     storage.onChanged.addListener((changes, namespace) => {
       if (namespace === 'local' && changes[this.key]) {
-        cb(changes[this.key].newValue);
+        const nv = changes[this.key].newValue;
+        this.cache = nv;
+        cb(nv);
       }
     });
   }
@@ -123,8 +152,8 @@ class BlueSea {
   }
 
   async getMaterials() {
-    const l = await materialsDB.get();
-    const config = await this.getConfig();
+    const l = (await materialsDB.get()) || [];
+    const config = (await this.getConfig()) || defaultConfig;
     const hideLearnedWord = config['隐藏完成复习的单词'];
     if (hideLearnedWord) {
       return l.filter(({ learn }) => {
@@ -427,9 +456,13 @@ class FunCtrl {
   async testBlack() {
     const config = await bluesea.getConfig();
     const blackList = config['黑名单'];
-    const hostname = new URL(window.location).hostname;
+    const hostname = typeof window !== 'undefined' ? new URL(window.location).hostname : '';
     return blackList.some((it) => it === hostname);
   }
 }
 
-const funCtrl = new FunCtrl();
+// Only instantiate FunCtrl in page contexts (content scripts / popup), not in service worker
+let funCtrl;
+if (typeof window !== 'undefined') {
+  funCtrl = new FunCtrl();
+}

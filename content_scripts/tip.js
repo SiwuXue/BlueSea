@@ -85,16 +85,40 @@ function makeTipEl(root, options, isBottom) {
 
     const audioRef = useRef();
     const [tfData, setTfData] = useState(null);
+    const [errorMsg, setErrorMsg] = useState('');
     const [ableTranslation, setAbleTranslation] = useState(isOneWord);
 
     useEffect(() => {
       if (ableTranslation) {
-        chrome.runtime.sendMessage(
-          { type: 'tf', payload: options.text },
-          (r) => {
-            setTfData(r);
+        try {
+          chrome.runtime.sendMessage(
+            { type: 'tf', payload: options.text },
+            (r) => {
+              try {
+                if (r) {
+                  setTfData(r);
+                  setErrorMsg('');
+                } else {
+                  setErrorMsg('未获取到翻译结果');
+                }
+              } catch (e) {
+                const msg = String((e && e.message) || e || '').toLowerCase();
+                if (msg.includes('extension context invalidated')) {
+                  setErrorMsg('扩展上下文失效，稍后重试');
+                } else {
+                  console.warn('Tip set state error:', e);
+                }
+              }
+            }
+          );
+        } catch (e) {
+          const msg = String((e && e.message) || e || '').toLowerCase();
+          if (msg.includes('extension context invalidated')) {
+            setErrorMsg('扩展上下文失效，稍后重试');
+          } else {
+            console.warn('Tip sendMessage error:', e);
           }
-        );
+        }
       }
     }, [ableTranslation]);
 
@@ -146,6 +170,12 @@ function makeTipEl(root, options, isBottom) {
     }
 
     if (!tfData || !config) {
+      const needKeys = !config || (!config['有道智云appkey'] || !config['有道智云key']);
+      const msg = errorMsg
+        ? errorMsg
+        : needKeys
+        ? '未获取到翻译。请在设置中配置有道智云 appkey 和 key'
+        : '正在获取翻译…若长时间无结果，请检查网络';
       return html`<div
         style="
         position: relative;
@@ -158,7 +188,7 @@ function makeTipEl(root, options, isBottom) {
         min-height: 130px;
       "
       >
-        <d-loading />
+        ${errorMsg ? html`<div style="padding: 12px; line-height: 1.6;">${msg}</div>` : html`<d-loading />`}
         <div
           style="position: absolute;
           z-index: -1;
@@ -352,7 +382,18 @@ function makeTipEl(root, options, isBottom) {
     </div>`;
   };
 
-  const result = render(html`<${App} />`, root);
+  let result = null;
+  try {
+    result = render(html`<${App} />`, root);
+  } catch (e) {
+    const msg = String((e && e.message) || e || '').toLowerCase();
+    if (msg.includes('extension context invalidated')) {
+      // 扩展上下文失效时，静默跳过，避免报错干扰页面
+      // 这里不重试，等待页面稳定或用户再次触发
+    } else {
+      console.warn('Tip render error:', e);
+    }
+  }
   return result;
 }
 

@@ -330,33 +330,57 @@ const handleStatistics = debounce(async () => {
 class Highlighter {
   targetList = [];
   config = {};
+  retryDelay = 1000;
+
+  resetRetryDelay() {
+    this.retryDelay = 1000;
+  }
+  nextRetryDelay() {
+    this.retryDelay = Math.min(this.retryDelay * 2, 30000);
+    return this.retryDelay;
+  }
 
   async render() {
-    this.targetList = await bluesea.getMaterials();
-    // textExts
-    const l = this.targetList.reduce((pre, cur) => {
-      if (cur.textExts) {
-        const l2 = cur.textExts.map((it) => ({
-          ...cur,
-          text: it,
-          originalText: cur.text,
-        }));
-        return [...pre, ...l2, cur];
+    try {
+      this.targetList = (await bluesea.getMaterials()) || [];
+      // textExts
+      const l = this.targetList.reduce((pre, cur) => {
+        if (cur.textExts) {
+          const l2 = cur.textExts.map((it) => ({
+            ...cur,
+            text: it,
+            originalText: cur.text,
+          }));
+          return [...pre, ...l2, cur];
+        } else {
+          return [...pre, cur];
+        }
+      }, []);
+      let nodes = await forReadyNodes(l);
+      // textExts
+      nodes.forEach((it) => {
+        if (it.material.originalText) {
+          it.material.text = it.material.originalText;
+        }
+      });
+
+      handleHighlighter(nodes, this.config['中文注解']);
+
+      handleStatistics();
+      this.resetRetryDelay();
+    } catch (e) {
+      const msg = String((e && e.message) || e || '').toLowerCase();
+      if (msg.includes('extension context invalidated')) {
+        // 扩展上下文失效，延迟重试渲染，避免频繁报错
+        const delay = this.nextRetryDelay();
+        setTimeout(() => {
+          this.render();
+        }, delay);
       } else {
-        return [...pre, cur];
+        // 其他错误仅记录，不中断页面
+        console.warn('Highlighter render error:', e);
       }
-    }, []);
-    let nodes = await forReadyNodes(l);
-    // textExts
-    nodes.forEach((it) => {
-      if (it.material.originalText) {
-        it.material.text = it.material.originalText;
-      }
-    });
-
-    handleHighlighter(nodes, this.config['中文注解']);
-
-    handleStatistics();
+    }
   }
   handleClear(nodes) {
     nodes.forEach((el) => {
